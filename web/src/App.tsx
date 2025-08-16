@@ -439,49 +439,158 @@ function AdminPage() {
   };
 
   const onStarted = async (m: Match, s: State) => {
-    setMatch(m); setState(s); setFinished(false); setResultText("");
+    // Reset view state
+    setMatch(m);
+    setState(s);
+    setFinished(false);
+    setResultText("");
+
+    // Load players and team names
     const [pa, pb, teams] = await Promise.all([
       fetchJSON(`${API}/api/players?teamId=${m.teamAId}`),
       fetchJSON(`${API}/api/players?teamId=${m.teamBId}`),
-      fetchJSON(`${API}/api/teams`)
+      fetchJSON(`${API}/api/teams`),
     ]);
     setPlayersByTeam({ [m.teamAId]: pa, [m.teamBId]: pb });
-    const mNames: Record<string, string> = {}; (teams as Team[]).forEach(t => mNames[t._id] = t.name); setTeamName(mNames);
+    const mNames: Record<string, string> = {};
+    (teams as Team[]).forEach((t) => (mNames[t._id] = t.name));
+    setTeamName(mNames);
 
+    // Join live room and (re)bind socket handlers safely
     socket.emit("match:join", m._id);
+    socket.off("presence");
+    socket.off("innings:changed");
+    socket.off("state:update");
+    socket.off("match:finished");
+
     socket.on("presence", ({ count }) => setViewerCount(count));
-    socket.on("innings:changed", async () => { await refreshInnings(); await refreshChase(); await refreshTotals(); });
+
+    socket.on("innings:changed", async () => {
+      await refreshInnings();
+      await refreshChase();
+      await refreshTotals();
+    });
+
     socket.on("state:update", async (st: State) => {
       setState(st);
-      await refreshInnings(); await refreshChase(); await refreshTotals();
-      // New batter flow
-      if (st.waitingForNewBatter) {
-        const opts = await fetchJSON(`${API}/api/matches/${m._id}/new-batter/options`);
-        const list: Player[] = (opts.players || []).map((p: any) => ({ _id: p._id, fullName: p.fullName, teamId: opts.battingTeamId }));
-        if (list.length) { setAvailableBatters(list); setNewBatterId(list[0]._id); setNeedNewBatter(true); }
-        else setNeedNewBatter(false);
-      } else setNeedNewBatter(false);
+      await refreshInnings();
+      await refreshChase();
+      await refreshTotals();
 
-      // Second-innings openers
+      // ——— New batter flow (live) ———
+      if (st.waitingForNewBatter) {
+        try {
+          const opts = await fetchJSON(`${API}/api/matches/${m._id}/new-batter/options`);
+          const list: Player[] = (opts.players || []).map((p: any) => ({
+            _id: p._id,
+            fullName: p.fullName,
+            teamId: opts.battingTeamId,
+          }));
+          if (list.length) {
+            setAvailableBatters(list);
+            setNewBatterId(list[0]._id || "");
+            setNeedNewBatter(true);
+          } else {
+            setNeedNewBatter(false);
+          }
+        } catch {
+          /* ignore */
+        }
+      } else {
+        setNeedNewBatter(false);
+      }
+
+      // ——— Second-innings openers (live) ———
       if ((st as any).waitingForOpeners) {
-        const opts = await fetchJSON(`${API}/api/matches/${m._id}/openers/options`);
-        if (opts.waiting) {
-          const bats: Player[] = (opts.batters || []).map((p: any) => ({ _id: p._id, fullName: p.fullName, teamId: opts.battingTeamId }));
-          const bowls: Player[] = (opts.bowlers || []).map((p: any) => ({ _id: p._id, fullName: p.fullName, teamId: opts.bowlingTeamId }));
-          setOpenBatters(bats); setOpenBowlers(bowls);
-          setOpenStrikerId(bats[0]?._id || ""); setOpenNonStrikerId(bats[1]?._id || ""); setOpenBowlerId(bowls[0]?._id || "");
-          setNeedOpeners(true);
-        } else setNeedOpeners(false);
-      } else setNeedOpeners(false);
+        try {
+          const opts = await fetchJSON(`${API}/api/matches/${m._id}/openers/options`);
+          if (opts.waiting) {
+            const bats: Player[] = (opts.batters || []).map((p: any) => ({
+              _id: p._id,
+              fullName: p.fullName,
+              teamId: opts.battingTeamId,
+            }));
+            const bowls: Player[] = (opts.bowlers || []).map((p: any) => ({
+              _id: p._id,
+              fullName: p.fullName,
+              teamId: opts.bowlingTeamId,
+            }));
+            setOpenBatters(bats);
+            setOpenBowlers(bowls);
+            setOpenStrikerId(bats[0]?._id || "");
+            setOpenNonStrikerId(bats[1]?._id || "");
+            setOpenBowlerId(bowls[0]?._id || "");
+            setNeedOpeners(true);
+          } else {
+            setNeedOpeners(false);
+          }
+        } catch {
+          /* ignore */
+        }
+      } else {
+        setNeedOpeners(false);
+      }
     });
+
     socket.on("match:finished", async (payload: any) => {
       setFinished(true);
-      await refreshInnings(); await refreshChase(); await refreshTotals();
+      await refreshInnings();
+      await refreshChase();
+      await refreshTotals();
       setResultText(payload.isTie ? "Match tied" : `${(teamName[payload.winnerTeamId] || "Winner")} won`);
     });
 
-    await refreshInnings(); await refreshChase(); await refreshTotals();
+    // Initial refresh
+    await refreshInnings();
+    await refreshChase();
+    await refreshTotals();
+
+    // 🔧 Immediate UI for pending flows on RESUME (no wait for socket events)
+    if (s.waitingForNewBatter) {
+      try {
+        const opts = await fetchJSON(`${API}/api/matches/${m._id}/new-batter/options`);
+        const list: Player[] = (opts.players || []).map((p: any) => ({
+          _id: p._id,
+          fullName: p.fullName,
+          teamId: opts.battingTeamId,
+        }));
+        if (list.length) {
+          setAvailableBatters(list);
+          setNewBatterId(list[0]._id || "");
+          setNeedNewBatter(true);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    if ((s as any).waitingForOpeners) {
+      try {
+        const opts = await fetchJSON(`${API}/api/matches/${m._id}/openers/options`);
+        if (opts.waiting) {
+          const bats: Player[] = (opts.batters || []).map((p: any) => ({
+            _id: p._id,
+            fullName: p.fullName,
+            teamId: opts.battingTeamId,
+          }));
+          const bowls: Player[] = (opts.bowlers || []).map((p: any) => ({
+            _id: p._id,
+            fullName: p.fullName,
+            teamId: opts.bowlingTeamId,
+          }));
+          setOpenBatters(bats);
+          setOpenBowlers(bowls);
+          setOpenStrikerId(bats[0]?._id || "");
+          setOpenNonStrikerId(bats[1]?._id || "");
+          setOpenBowlerId(bowls[0]?._id || "");
+          setNeedOpeners(true);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
   };
+
 
   const ensureBowler = () => !!state?.bowlerId;
   const setBowler = async (bowlerId: string) => {
