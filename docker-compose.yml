@@ -1,0 +1,28 @@
+
+version: "3.9"
+services:
+  mongo:
+    image: mongo:7
+    container_name: cricket_mongo
+    ports: ["27017:27017"]
+    volumes:
+      - mongo_data:/data/db
+  api:
+    build: ./server
+    container_name: cricket_api
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/cricket
+      - PORT=4000
+      - CORS_ORIGIN=http://localhost:5173
+    ports: ["4000:4000"]
+    depends_on: [mongo]
+  web:
+    build: ./web
+    container_name: cricket_web
+    environment:
+      - VITE_API_BASE=http://localhost:4000
+      - VITE_SOCKET_URL=http://localhost:4000
+    ports: ["5173:5173"]
+    depends_on: [api]
+volumes:
+  mongo_data:

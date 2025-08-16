@@ -1,0 +1,150 @@
+:root {
+    --bg: #0b1020;
+    --card: #11172a;
+    --muted: #7f8ca6;
+    --accent: #5b8cff;
+    --text: #eaf0ff;
+    --danger: #ff6b6b;
+    --ok: #20c997;
+}
+
+* {
+    box-sizing: border-box
+}
+
+body {
+    margin: 0;
+    font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+}
+
+.container {
+    max-width: 1100px;
+    margin: 24px auto;
+    padding: 16px
+}
+
+.card {
+    background: var(--card);
+    border: 1px solid #1c2541;
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 10px 20px rgba(0, 0, 0, .25);
+}
+
+.h1 {
+    font-size: 22px;
+    font-weight: 800;
+    margin: 0 0 8px
+}
+
+.row {
+    display: grid;
+    gap: 12px
+}
+
+@media(min-width:768px) {
+    .row-3 {
+        grid-template-columns: repeat(3, 1fr)
+    }
+
+    .row-2 {
+        grid-template-columns: repeat(2, 1fr)
+    }
+}
+
+label {
+    font-size: 12px;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 6px
+}
+
+select,
+input,
+textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid #28314f;
+    background: #0b1326;
+    color: var(--text);
+}
+
+button {
+    padding: 10px 12px;
+    border: 1px solid #28314f;
+    border-radius: 12px;
+    background: #0e1a38;
+    color: var(--text);
+    cursor: pointer
+}
+
+button:hover {
+    border-color: var(--accent)
+}
+
+.btn-accent {
+    background: linear-gradient(180deg, #2946ff, #1b34c5);
+    border: 0
+}
+
+.badge {
+    font-size: 12px;
+    color: #c7d2fe;
+    background: #1b2560;
+    padding: 3px 8px;
+    border-radius: 999px
+}
+
+.stat {
+    font-size: 28px;
+    font-weight: 800
+}
+
+.sub {
+    font-size: 12px;
+    color: var(--muted)
+}
+
+.grid-6 {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 8px
+}
+
+.grid-4 {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px
+}
+
+@media(max-width:520px) {
+    .grid-6 {
+        grid-template-columns: repeat(3, 1fr)
+    }
+
+    .grid-4 {
+        grid-template-columns: repeat(2, 1fr)
+    }
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px
+}
+
+.table th,
+.table td {
+    border-bottom: 1px solid #223055;
+    padding: 8px;
+    text-align: left;
+    font-size: 13px
+}
+
+.right {
+    text-align: right
+}
