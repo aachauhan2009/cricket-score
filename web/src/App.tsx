@@ -35,6 +35,27 @@ const fetchJSON = async (url: string, init?: RequestInit) => {
   return data;
 };
 
+/* ----------------- Reusable Modal ----------------- */
+function Modal({
+  open, onClose, title, children, footer
+}: {
+  open: boolean; onClose: () => void; title: string; children: React.ReactNode; footer?: React.ReactNode;
+}) {
+  if (!open) return null;
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-head">
+          <div className="h1" style={{ margin: 0 }}>{title}</div>
+          <button className="btn" onClick={onClose}>Close</button>
+        </div>
+        <div className="modal-body">{children}</div>
+        {footer && <div className="modal-foot">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+
 /* ----------------- Shared Scoreboard (read-only view) ----------------- */
 function ScoreboardView({
   match, state, innings, teamName, chase, viewerCount
@@ -221,7 +242,7 @@ function AdminLogin() {
   );
 }
 
-/* ----------------- Admin: Start/Resume + Scoring ----------------- */
+/* ----------------- Admin: Start/Resume ----------------- */
 function StartMatch({ onStarted }: { onStarted: (m: Match, s: State) => void }) {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -406,18 +427,27 @@ function AdminPage() {
   const [viewerCount, setViewerCount] = useState(1);
   const [finished, setFinished] = useState(false);
   const [resultText, setResultText] = useState("");
+
+  // New UI states
   const [needNewBatter, setNeedNewBatter] = useState(false);
   const [availableBatters, setAvailableBatters] = useState<Player[]>([]);
   const [newBatterId, setNewBatterId] = useState("");
+
   const [needOpeners, setNeedOpeners] = useState(false);
   const [openBatters, setOpenBatters] = useState<Player[]>([]);
   const [openBowlers, setOpenBowlers] = useState<Player[]>([]);
   const [openStrikerId, setOpenStrikerId] = useState("");
   const [openNonStrikerId, setOpenNonStrikerId] = useState("");
   const [openBowlerId, setOpenBowlerId] = useState("");
+
   const [showWicket, setShowWicket] = useState(false);
   const [dismissalType, setDismissalType] = useState("caught");
   const [outEnd, setOutEnd] = useState<"striker" | "non-striker">("striker");
+
+  // Modals
+  const [showBowlerModal, setShowBowlerModal] = useState(false);
+  const [showNoBallModal, setShowNoBallModal] = useState(false);
+  const [bowlingStats, setBowlingStats] = useState<Record<string, { overs: string; r: number; w: number }>>({});
 
   const socket = useMemo(() => io(SOCKET_URL, { withCredentials: true }), []);
   useEffect(() => () => socket.disconnect(), [socket]);
@@ -437,6 +467,43 @@ function AdminPage() {
     const { totals } = await fetchJSON(`${API}/api/matches/${match._id}/totals`);
     (window as any).__totals = totals || {};
   };
+
+  const pullBowlingStats = async (bowlingTeamId: string) => {
+    if (!match) return;
+    try {
+      const byTeam = await fetchJSON(`${API}/api/matches/${match._id}/scorecard`);
+      const bowlRows = (byTeam?.[bowlingTeamId]?.bowling || []) as any[];
+      const map: Record<string, { overs: string; r: number; w: number }> = {};
+      for (const r of bowlRows) map[r.playerId] = { overs: r.overs, r: r.runsConceded, w: r.wickets };
+      setBowlingStats(map);
+    } catch {
+      setBowlingStats({});
+    }
+  };
+
+  const autoOpenNextBowler = async () => {
+    if (!match || !state || finished) return;
+    // Don’t open if we’re between innings or waiting for a new batter
+    if ((state as any).waitingForOpeners || state.waitingForNewBatter) return;
+    // Only when the bowler has been cleared at the end of the over
+    if (state.bowlerId) return;
+
+    const bowlingTeamId = getBowlingTeamId();
+    if (!bowlingTeamId) return;
+
+    await pullBowlingStats(bowlingTeamId);
+    setShowBowlerModal(true);
+  };
+
+  useEffect(() => {
+    // Over-end condition: balls is a multiple of 6 and bowler was cleared by server
+    if (!state) return;
+    const overEnd = state.balls > 0 && state.balls % 6 === 0 && !state.bowlerId;
+    if (overEnd && !state.waitingForOpeners) {
+      autoOpenNextBowler();
+    }
+    // Also handles manual clears / resumes where bowlerId is empty
+  }, [state?.balls, state?.bowlerId, state?.waitingForOpeners, state?.waitingForNewBatter]);
 
   const onStarted = async (m: Match, s: State) => {
     // Reset view state
@@ -545,7 +612,7 @@ function AdminPage() {
     await refreshChase();
     await refreshTotals();
 
-    // 🔧 Immediate UI for pending flows on RESUME (no wait for socket events)
+    // Immediate flows on resume
     if (s.waitingForNewBatter) {
       try {
         const opts = await fetchJSON(`${API}/api/matches/${m._id}/new-batter/options`);
@@ -559,11 +626,8 @@ function AdminPage() {
           setNewBatterId(list[0]._id || "");
           setNeedNewBatter(true);
         }
-      } catch {
-        /* ignore */
-      }
+      } catch { }
     }
-
     if ((s as any).waitingForOpeners) {
       try {
         const opts = await fetchJSON(`${API}/api/matches/${m._id}/openers/options`);
@@ -585,20 +649,36 @@ function AdminPage() {
           setOpenBowlerId(bowls[0]?._id || "");
           setNeedOpeners(true);
         }
-      } catch {
-        /* ignore */
-      }
+      } catch { }
     }
   };
 
-
   const ensureBowler = () => !!state?.bowlerId;
+  const getBowlingTeamId = (): string | undefined => {
+    if (!match || !state) return;
+    // infer batting team from striker's team
+    const all = (playersByTeam[match.teamAId] || []).concat(playersByTeam[match.teamBId] || []);
+    const striker = all.find(p => p._id === state.strikerId);
+    const battingTeamId = striker?.teamId;
+    if (!battingTeamId) return;
+    return battingTeamId === match.teamAId ? match.teamBId : match.teamAId;
+  };
+
+  const openBowlerPicker = async () => {
+    const bowlingTeamId = getBowlingTeamId();
+    if (!bowlingTeamId) return alert("Pick openers or striker first.");
+    await pullBowlingStats(bowlingTeamId);
+    setShowBowlerModal(true);
+  };
+
   const setBowler = async (bowlerId: string) => {
     if (!match) return;
     await fetchJSON(`${API}/api/matches/${match._id}/set-bowler`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bowlerId })
-    });
+    }).catch(e => alert(e.message || "Unable to set bowler"));
+    setShowBowlerModal(false);
   };
+
   const sendBall = async (
     payload: { runs: number; kind: "normal" | "bye" | "leg-bye" | "wide" | "no-ball"; wicket?: boolean },
     dismissal?: string,
@@ -622,14 +702,16 @@ function AdminPage() {
     });
     await refreshChase();
   };
+
   const confirmNewBatter = async () => {
     if (!match || !state || !newBatterId) { setNeedNewBatter(false); return; }
     await fetchJSON(`${API}/api/matches/${match._id}/new-batter`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ playerId: newBatterId, end: state.waitingForNewBatterEnd || "striker" })
-    });
+    }).catch(e => alert(e.message || "Unable to set new batter"));
     setNeedNewBatter(false);
   };
+
   const confirmOpeners = async () => {
     if (!match) return;
     if (!openStrikerId || !openNonStrikerId || openStrikerId === openNonStrikerId) {
@@ -638,7 +720,7 @@ function AdminPage() {
     await fetchJSON(`${API}/api/matches/${match._id}/openers`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ strikerId: openStrikerId, nonStrikerId: openNonStrikerId, bowlerId: openBowlerId || undefined })
-    });
+    }).catch(e => alert(e.message || "Unable to set openers"));
     setNeedOpeners(false);
     await refreshChase();
   };
@@ -669,25 +751,18 @@ function AdminPage() {
           {/* Read-only scoreboard */}
           <ScoreboardView match={match} state={state} innings={innings} teamName={teamName} chase={chase} viewerCount={viewerCount} />
 
-          {/* Bowler select */}
+          {/* Bowler quick section */}
           <div className="card">
             <div className="h1">Bowler</div>
             <div className="row row-2">
               <div>
-                <label>Choose bowler</label>
-                <select value={state.bowlerId || ""} onChange={e => setBowler(e.target.value)} disabled={(state as any).waitingForOpeners || finished}>
-                  <option value="">Select bowler</option>
-                  {(() => {
-                    const all = (playersByTeam[match.teamAId] || []).concat(playersByTeam[match.teamBId] || []);
-                    const striker = all.find(p => p._id === state.strikerId);
-                    const battingTeamId = striker?.teamId;
-                    const bowlingTeamId = battingTeamId === match?.teamAId ? match?.teamBId : match?.teamAId;
-                    return (playersByTeam[bowlingTeamId || ""] || []).map(p => <option key={p._id} value={p._id}>{p.fullName}</option>);
-                  })()}
-                </select>
+                <div className="sub">Current: <b>{state.bowler || "—"}</b></div>
+                {!state.bowlerId && !(state as any).waitingForOpeners && !finished && <div className="sub" style={{ marginTop: 6 }}>Pick a bowler to begin/continue the over.</div>}
+              </div>
+              <div style={{ display: "flex", alignItems: "end", justifyContent: "flex-end" }}>
+                <button className="btn-accent" onClick={openBowlerPicker} disabled={(state as any).waitingForOpeners || finished}>Change / Select Bowler</button>
               </div>
             </div>
-            {!state.bowlerId && !(state as any).waitingForOpeners && !finished && <div className="sub" style={{ marginTop: 6 }}>Pick a bowler to begin/continue the over.</div>}
           </div>
 
           {/* Second-innings openers */}
@@ -722,35 +797,19 @@ function AdminPage() {
             </div>
           )}
 
-          {/* New batter modal */}
-          {needNewBatter && (
-            <div className="card">
-              <div className="h1">New Batter</div>
-              <div className="row row-2">
-                <div>
-                  <label>
-                    Select replacement for <b>{state?.waitingForNewBatterEnd === "non-striker" ? "Non-striker" : "Striker"}</b>
-                  </label>
-                  <select value={newBatterId} onChange={e => setNewBatterId(e.target.value)}>
-                    {availableBatters.map(p => <option key={p._id} value={p._id}>{p.fullName}</option>)}
-                  </select>
-                </div>
-                <div style={{ display: "flex", alignItems: "end" }}>
-                  <button className="btn-accent" onClick={confirmNewBatter} disabled={!newBatterId}>Confirm</button>
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Scoring */}
           <div className="card">
             <div className="h1">Score</div>
             <div className="grid-6" style={{ marginBottom: 8 }}>
-              {[0, 1, 2, 3, 4, 6].map(n => <button key={n} onClick={() => sendBall({ runs: n, kind: "normal" })} disabled={(state as any).waitingForOpeners || state.waitingForNewBatter || finished}>{n}</button>)}
+              {[0, 1, 2, 3, 4, 6].map(n => (
+                <button key={n} onClick={() => sendBall({ runs: n, kind: "normal" })} disabled={(state as any).waitingForOpeners || state.waitingForNewBatter || finished}>
+                  {n}
+                </button>
+              ))}
             </div>
             <div className="grid-4">
               <button onClick={() => sendBall({ runs: 0, kind: "wide" })} disabled={(state as any).waitingForOpeners || state.waitingForNewBatter || finished}>Wide +1</button>
-              <button onClick={() => sendBall({ runs: 0, kind: "no-ball" })} disabled={(state as any).waitingForOpeners || state.waitingForNewBatter || finished}>No-ball +1</button>
+              <button onClick={() => setShowNoBallModal(true)} disabled={(state as any).waitingForOpeners || state.waitingForNewBatter || finished}>No-ball (+ pick bat runs)</button>
               <button onClick={() => sendBall({ runs: 1, kind: "bye" })} disabled={(state as any).waitingForOpeners || state.waitingForNewBatter || finished}>Bye 1</button>
               <button onClick={() => sendBall({ runs: 1, kind: "leg-bye" })} disabled={(state as any).waitingForOpeners || state.waitingForNewBatter || finished}>Leg-bye 1</button>
               <button
@@ -763,42 +822,122 @@ function AdminPage() {
             </div>
           </div>
 
-          {/* Wicket dialog */}
-          {showWicket && (
-            <div className="card">
-              <div className="h1">Wicket</div>
-              <div className="row row-3">
-                <div>
-                  <label>Dismissal type</label>
-                  <select value={dismissalType} onChange={e => setDismissalType(e.target.value)}>
-                    {["caught", "bowled", "lbw", "runout", "stumped", "hitwicket"].map(w => <option key={w} value={w}>{w}</option>)}
-                  </select>
-                </div>
-                {dismissalType === "runout" && (
-                  <div>
-                    <label>Who is out?</label>
-                    <select value={outEnd} onChange={e => setOutEnd(e.target.value as "striker" | "non-striker")}>
-                      <option value="striker">Striker</option>
-                      <option value="non-striker">Non-striker</option>
-                    </select>
-                  </div>
-                )}
-                <div style={{ display: "flex", alignItems: "end", gap: 8 }}>
-                  <button onClick={() => setShowWicket(false)}>Cancel</button>
-                  <button
-                    className="btn-accent"
-                    onClick={async () => {
-                      await sendBall({ runs: 0, kind: "normal", wicket: true }, dismissalType, dismissalType === "runout" ? outEnd : undefined);
-                      setShowWicket(false);
-                    }}
-                  >
-                    Confirm
-                  </button>
+          {/* MODAL: Bowler picker (cards) */}
+          <Modal
+            open={showBowlerModal}
+            onClose={() => setShowBowlerModal(false)}
+            title="Select Bowler"
+            footer={<div className="sub">Bowling limit is enforced by server (per innings).</div>}
+          >
+            <div className="grid-cards">
+              {(() => {
+                if (!match || !state) return null;
+                const all = (playersByTeam[match.teamAId] || []).concat(playersByTeam[match.teamBId] || []);
+                const striker = all.find(p => p._id === state.strikerId);
+                const battingTeamId = striker?.teamId;
+                const bowlingTeamId = battingTeamId === match?.teamAId ? match?.teamBId : match?.teamAId;
+                const list = playersByTeam[bowlingTeamId || ""] || [];
+                return list.map(p => {
+                  const st = bowlingStats[p._id];
+                  return (
+                    <button
+                      key={p._id}
+                      className={cls("card-option", state.bowlerId === p._id && "selected")}
+                      onClick={() => setBowler(p._id)}
+                    >
+                      <div className="card-title">{p.fullName}</div>
+                      <div className="card-sub">{teamName[p.teamId] || "—"}</div>
+                      <div className="card-meta">
+                        <span>Overs: <b>{st?.overs ?? "0.0"}</b></span>
+                        <span>R: <b>{st?.r ?? 0}</b></span>
+                        <span>W: <b>{st?.w ?? 0}</b></span>
+                      </div>
+                    </button>
+                  );
+                });
+              })()}
+            </div>
+          </Modal>
+
+          {/* MODAL: New batter picker (cards) */}
+          <Modal
+            open={needNewBatter}
+            onClose={() => { }}
+            title={`New Batter (${state?.waitingForNewBatterEnd === "non-striker" ? "Non-striker" : "Striker"})`}
+            footer={<button className="btn-accent" onClick={confirmNewBatter} disabled={!newBatterId}>Confirm</button>}
+          >
+            <div className="grid-cards">
+              {availableBatters.map(p => (
+                <button
+                  key={p._id}
+                  className={cls("card-option", newBatterId === p._id && "selected")}
+                  onClick={() => setNewBatterId(p._id)}
+                >
+                  <div className="card-title">{p.fullName}</div>
+                  <div className="card-sub">{teamName[p.teamId] || "—"}</div>
+                </button>
+              ))}
+            </div>
+          </Modal>
+
+          {/* MODAL: No-ball + bat runs */}
+          <Modal
+            open={showNoBallModal}
+            onClose={() => setShowNoBallModal(false)}
+            title="No-ball — pick bat runs"
+          >
+            <div className="grid-6">
+              {[0, 1, 2, 3, 4, 5, 6].map(n => (
+                <button key={n} onClick={async () => { await sendBall({ runs: n, kind: "no-ball" }); setShowNoBallModal(false); }}>
+                  NB + {n}
+                </button>
+              ))}
+            </div>
+            <div className="sub" style={{ marginTop: 8 }}>No-ball adds a penalty 1 run automatically. Bat runs you pick are added on top (and strike rotates on odd bat runs).</div>
+          </Modal>
+
+          {/* MODAL: Wicket types */}
+          <Modal
+            open={showWicket}
+            onClose={() => setShowWicket(false)}
+            title="Wicket"
+            footer={
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button onClick={() => setShowWicket(false)}>Cancel</button>
+                <button
+                  className="btn-accent"
+                  onClick={async () => {
+                    await sendBall({ runs: 0, kind: "normal", wicket: true }, dismissalType, dismissalType === "runout" ? outEnd : undefined);
+                    setShowWicket(false);
+                  }}
+                >
+                  Confirm
+                </button>
+              </div>
+            }
+          >
+            <div className="grid-cards">
+              {["caught", "bowled", "lbw", "runout", "stumped", "hitwicket"].map(w => (
+                <button
+                  key={w}
+                  className={cls("card-option", dismissalType === w && "selected")}
+                  onClick={() => setDismissalType(w)}
+                >
+                  <div className="card-title" style={{ textTransform: "capitalize" }}>{w}</div>
+                </button>
+              ))}
+            </div>
+            {dismissalType === "runout" && (
+              <div style={{ marginTop: 10 }}>
+                <div className="sub" style={{ marginBottom: 6 }}>Who is out?</div>
+                <div style={{ display: "flex", gap: 12 }}>
+                  <label><input type="radio" value="striker" checked={outEnd === "striker"} onChange={() => setOutEnd("striker")} /> Striker</label>
+                  <label><input type="radio" value="non-striker" checked={outEnd === "non-striker"} onChange={() => setOutEnd("non-striker")} /> Non-striker</label>
                 </div>
               </div>
-              {state?.nextBallFreeHit && <div className="sub" style={{ marginTop: 6 }}>Next ball is a FREE-HIT (only run-out allowed).</div>}
-            </div>
-          )}
+            )}
+            {state?.nextBallFreeHit && <div className="sub" style={{ marginTop: 10 }}>Note: If next ball is a FREE-HIT, only run-out will count.</div>}
+          </Modal>
         </>
       )}
     </>
