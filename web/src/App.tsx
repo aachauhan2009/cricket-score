@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Link, useNavigate, useParams, NavLink } f
 import { io } from "socket.io-client";
 import "./styles.css";
 
-const API = import.meta.env.VITE_API_BASE || "https://cricket-score-fxf8.onrender.com";
+const API = import.meta.env.VITE_API_BASE || "";
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API;
 
 /* ----------------- Types ----------------- */

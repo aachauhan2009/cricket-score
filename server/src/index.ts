@@ -10,13 +10,28 @@ import {
   PlayerStats, GroupTeam, Group, Tournament, MatchResult
 } from "./models.js";
 
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Where the built frontend lives:
+//  - set STATIC_DIR=/absolute/path/to/web/dist in prod
+//  - by default, looks for ./public next to index.ts
+const STATIC_DIR = process.env.STATIC_DIR
+  ? path.resolve(process.env.STATIC_DIR)
+  : path.resolve(__dirname, "public");
+
+
+
 /* ------------ Config ------------ */
 const PORT = Number(process.env.PORT ?? 4000);
 const MONGO_URI = process.env.MONGO_URI ?? "mongodb://localhost:27017/cricket";
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "http://localhost:5173";
 const SESSION_SECRET = process.env.SESSION_SECRET ?? "devsecret";
 const ADMIN_USER = process.env.ADMIN_USER ?? "admin";
-const ADMIN_PASS = process.env.ADMIN_PASS ?? "password";
+const ADMIN_PASS = process.env.ADMIN_PASS ?? "GLSCricket@12345";
 const ALLOWED_OVERS = new Set([6, 8, 10, 20]);
 
 await mongoose.connect(MONGO_URI);
@@ -33,12 +48,28 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      sameSite: "none",
-      secure: true, // set true if serving over HTTPS + sameSite:'none'
+      sameSite: "lax",
+      secure: false, // set true if serving over HTTPS + sameSite:'none'
       maxAge: 7 * 24 * 60 * 60 * 1000,
     },
   })
 );
+
+app.use(express.static(STATIC_DIR, {
+  index: false,                 // we'll send index.html manually (SPA)
+  maxAge: "1h",                 // cache static files for a bit
+}));
+
+// SPA fallback: send index.html for non-API, non-Socket.IO routes
+app.get("*", (req, res, next) => {
+  // Don't hijack API or socket paths
+  if (req.path.startsWith("/api") || req.path.startsWith("/socket.io")) return next();
+
+  const indexFile = path.join(STATIC_DIR, "index.html");
+  res.sendFile(indexFile, (err) => {
+    if (err) next(err);
+  });
+});
 
 const http = createServer(app);
 const io = new IOServer(http, { cors: { origin: CORS_ORIGIN, credentials: true } });

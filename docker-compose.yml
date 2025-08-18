@@ -1,28 +1,65 @@
+version: "2.4"
 
-version: "3.9"
 services:
   mongo:
-    image: mongo:7
+    image: mongo:6
     container_name: cricket_mongo
-    ports: ["27017:27017"]
+    restart: unless-stopped
+    ports:
+      - "27017:27017"              # optional: remove if you don't need host access
     volumes:
-      - mongo_data:/data/db
-  api:
-    build: ./server
-    container_name: cricket_api
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "mongodb://localhost:27017", "--eval", "db.adminCommand({ ping: 1 })"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Builds the React app and copies /dist -> named volume
+  web-build:
+    build:
+      context: ./web
+      dockerfile: Dockerfile       # the web/Dockerfile you created
+    image: cricket_web:latest      # local tag; optional
+    command: >
+      sh -c "rm -rf /target/* && cp -a /dist/. /target/"
+    volumes:
+      - web-dist:/target           # write compiled assets into named volume
+    restart: "no"
+
+  app:
+    build:
+      context: ./server
+      dockerfile: Dockerfile       # your server Dockerfile at repo root
+    container_name: cricket_app
+    depends_on:
+      mongo:
+        condition: service_healthy
+      web-build:
+        condition: service_completed_successfully
     environment:
-      - MONGO_URI=mongodb://mongo:27017/cricket
-      - PORT=4000
-      - CORS_ORIGIN=http://localhost:5173
-    ports: ["4000:4000"]
-    depends_on: [mongo]
-  web:
-    build: ./web
-    container_name: cricket_web
-    environment:
-      - VITE_API_BASE=http://localhost:4000
-      - VITE_SOCKET_URL=http://localhost:4000
-    ports: ["5173:5173"]
-    depends_on: [api]
+      NODE_ENV: production
+      PORT: 4000
+      MONGO_URI: mongodb://mongo:27017/cricket
+      JWT_SECRET: change-me-to-a-long-random-string
+      ADMIN_USER: admin
+      ADMIN_PASS: password
+      # Same-origin (Express serves SPA from this path)
+      STATIC_DIR: /app/web/dist
+      # Optional: if you still keep CORS enabled in code, empty means "none"
+      CORS_ORIGIN: ""
+    volumes:
+      - web-dist:/app/web/dist:ro  # mount built SPA into the server container (read-only)
+    ports:
+      - "4000:4000"
+    restart: unless-stopped
+    # Optional: enable if you have /healthz in the server
+    # healthcheck:
+    #   test: ["CMD", "wget", "-qO-", "http://localhost:4000/healthz"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+
 volumes:
-  mongo_data:
+  mongo-data:
+  web-dist:
